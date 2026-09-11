@@ -6,6 +6,12 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Made with Three.js](https://img.shields.io/badge/three.js-0.160-orange)
 
+## 🚀 Live Demo
+
+👉 **[https://ydedwq1.github.io/Source-Asset-Viewer/](https://ydedwq1.github.io/Source-Asset-Viewer/)**
+
+Just drag a `.vmf` file onto the page — or a whole `materials` folder — and start exploring.
+
 ---
 
 ## ✨ Features
@@ -48,14 +54,6 @@
 - Responsive layout with collapsible sidebars
 - Touch gestures: **one finger to rotate, two fingers to zoom & pan**
 - Safe-area insets for iOS notch devices
-
----
-
-## 🚀 Live Demo
-
-👉 **[Open Source Asset Viewer](https://YOUR-USERNAME.github.io/source-asset-viewer/)**
-
-Just drag a `.vmf` file onto the page — or a whole `materials` folder — and start exploring.
 
 ---
 
@@ -154,4 +152,9 @@ MIT — free to use, modify, and distribute. Attribution appreciated but not req
 
 Pull requests are welcome! If you find a bug or want a new feature, open an issue.
 
-If you like this project, ⭐ **star the repo** — it helps a lot! 
+If you like this project, ⭐ **star the repo** — it helps a lot!
+
+---
+
+**🔗 Live:** [https://ydedwq1.github.io/Source-Asset-Viewer/](https://ydedwq1.github.io/Source-Asset-Viewer/)
+**📦 Repo:** [https://github.com/ydedwq1/Source-Asset-Viewer](https://github.com/ydedwq1/Source-Asset-Viewer)
