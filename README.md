@@ -4,7 +4,7 @@
 
 **View, explore and export Source Engine assets right in your browser.**
 
-Maps · Models · Textures · GLB Export · Local Storage
+Maps · Models · Textures · GLB Export · Local Storage · Multi-language
 
 [![Live Demo](https://img.shields.io/badge/🚀_Live_Demo-ydedwq1.github.io-58a6ff?style=for-the-badge)](https://ydedwq1.github.io/Source-Asset-Viewer/)
 [![License](https://img.shields.io/badge/License-MIT-3fb950?style=for-the-badge)](LICENSE)
@@ -28,7 +28,7 @@ Just drop a file and it works — everything runs locally in your browser.
   - [🖼 VTF Texture Browser](#-vtf-texture-browser)
   - [💾 Local Storage](#-local-storage-indexeddb)
   - [📱 Cross-platform](#-cross-platform)
-- [Screenshots](#-screenshots)
+  - [🌐 Multi-language](#-multi-language)
 - [How to Use](#-how-to-use)
 - [Supported Formats](#-supported-formats)
 - [Technical Details](#-technical-details)
@@ -190,21 +190,26 @@ The UI adapts to any screen size.
 
 ---
 
-## 📸 Screenshots
+### 🌐 Multi-language
 
-> Replace these with actual screenshots of your app. Example:
+The interface is fully localized.
 
-### VMF Map Viewer
-![Map Viewer](screenshots/map-viewer.png)
+- **Automatic detection** — the UI matches your system language on first visit
+- **Manual switcher** — a globe selector in the top bar (Auto / EN / RU)
+- **Persistent choice** — your selection is saved in `localStorage`
+- **Easy to extend** — add new languages by editing a single dictionary object
 
-### MDL Model Viewer
-![Model Viewer](screenshots/model-viewer.png)
+Currently supported:
 
-### VTF Texture Browser
-![Texture Browser](screenshots/texture-browser.png)
-
-### Storage Manager
-![Storage](screenshots/storage.png)
+| Language | Code | Status |
+|---|---|---|
+| English | `en` | ✅ Full |
+| Russian | `ru` | ✅ Full |
+| German | `de` | 🔜 Planned |
+| French | `fr` | 🔜 Planned |
+| Spanish | `es` | 🔜 Planned |
+| Polish | `pl` | 🔜 Planned |
+| Chinese | `zh` | 🔜 Planned |
 
 ---
 
@@ -322,6 +327,14 @@ For each bone in the MDL:
 
 This gives a proper bind-pose render.
 
+### The i18n system
+
+- `TRANSLATIONS` object holds all strings per language
+- `t(key, params)` function returns a translated string with `{placeholder}` substitution
+- `applyTranslations()` walks the DOM and updates everything with `data-i18n` attributes
+- Language is auto-detected from `navigator.language`, cached in `localStorage`
+- Fallback chain: current language → English → key name
+
 ---
 
 ## 📂 Project Structure
@@ -331,11 +344,6 @@ Source-Asset-Viewer/
 ├── index.html          ← the entire application (self-contained)
 ├── README.md           ← this file
 ├── LICENSE             ← MIT license
-├── screenshots/
-│   ├── map-viewer.png
-│   ├── model-viewer.png
-│   ├── texture-browser.png
-│   └── storage.png
 └── .gitignore
 ```
 
@@ -451,6 +459,9 @@ CS:GO models (v49) work. CS2 models use a new format (`.vmdl` + `.vmat`) which i
 **Q: What about VMT materials?**
 Only the `.vtf` textures are read. VMT parameters like `$basetexture` are not parsed, because the VMF already stores the texture path directly. However, the VMF path is usually the same as `$basetexture`.
 
+**Q: How do I change the language?**
+Click the 🌐 globe selector in the top-right corner of the app. Choose **Auto** to match your system language, or pick **EN** / **RU** manually. Your choice is remembered.
+
 **Q: My model has strange geometry — why?**
 Some MDL versions have unusual VTX layouts. The parser tries several; if geometry still fails, please [open an issue](https://github.com/ydedwq1/Source-Asset-Viewer/issues) with the file name and game.
 
@@ -469,6 +480,7 @@ Yes! PRs welcome — especially for CS2 `.vmdl` support, `.vmat` parsing, or bet
 - 🔸 GLB export can be slow on complex maps
 - 🔸 No animation playback — only bind pose
 - 🔸 No lightmaps or baked lighting
+- 🔸 Only English and Russian are fully translated
 
 ---
 
@@ -485,6 +497,7 @@ Yes! PRs welcome — especially for CS2 `.vmdl` support, `.vmat` parsing, or bet
 - [ ] **Model comparison** — side-by-side view
 - [ ] **Measurement tool** — distances and areas
 - [ ] **Physics simulation** — drop the map into a rigid body world
+- [ ] **More translations** — German, French, Spanish, Polish, Chinese, Japanese
 
 ---
 
@@ -505,7 +518,7 @@ Contributions are always welcome — bugs, features, translations, docs, whateve
 ### What we're looking for
 
 - 🎨 Better material fallback colors
-- 🌍 Translations (RU, DE, FR, ES, PL, PT, CN, JP)
+- 🌍 Translations (DE, FR, ES, PL, PT, CN, JP)
 - 🧪 Test VMF/MDL/VTF files from different games
 - ⚡ Performance improvements
 - 🐛 Bug fixes for edge cases
@@ -561,4 +574,4 @@ If this project helped you, please consider giving it a star — it really helps
 
 Made with ❤️ for the Source Engine modding community.
 
-</div>
+</div> 
