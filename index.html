@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<title>Source Asset Viewer — VMF · MDL · VTF</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="app">
+  <nav id="topbar">
+    <span class="brand">Source Viewer</span>
+    <button class="tab active" data-tab="vmf"><span class="ico">🗺</span><span class="lbl" data-i18n="tab_maps">Карты</span></button>
+    <button class="tab" data-tab="models"><span class="ico">📦</span><span class="lbl" data-i18n="tab_models">Модели</span></button>
+    <button class="tab" data-tab="tex"><span class="ico">🖼</span><span class="lbl" data-i18n="tab_tex">Текстуры</span></button>
+    <div class="spacer"></div>
+    <div class="gstats">
+      <div class="gpill clickable" id="gStore" data-i18n-title="open_storage">
+        <span class="dot on" id="gDotStore"></span><span data-i18n="files">Файлы</span> <b id="gFiles">0</b>
+      </div>
+      <div class="gpill opt"><span class="dot" id="gDotT"></span>VTF <b id="gT">0</b></div>
+      <div class="gpill opt"><span class="dot" id="gDotM"></span>MDL <b id="gM">0</b></div>
+      <div class="gpill opt"><span class="dot" id="gDotI"></span>ICO <b id="gI">0</b></div>
+    </div>
+    <select id="langSel" class="lang-sel" title="Language"></select>
+  </nav>
+
+  <div id="main">
+
+    <section id="paneVmf" class="pane active">
+      <canvas id="vmfCanvas"></canvas>
+      <div id="vmfProgress"></div>
+      <div id="vmfToolbar">
+        <button class="btn primary" id="vmfBtnOpen">📂 <span data-i18n="vmf_open">Карта</span></button>
+        <button class="btn" id="vmfBtnTex">🎨 <span data-i18n="vmf_tex">Текстуры</span> <span class="badge" id="vmfTexBadge">0</span></button>
+        <button class="btn" id="vmfBtnGLB" disabled>💾 GLB</button>
+        <button class="btn" id="vmfBtnShot" disabled>📷</button>
+        <button class="btn" id="vmfBtnFit" disabled>🎯</button>
+        <button class="btn" id="vmfBtnWire" disabled>▦</button>
+        <button class="btn" id="vmfBtnPanel" disabled>📊</button>
+      </div>
+      <div id="vmfPanel">
+        <h3 data-i18n="stats">Статистика</h3>
+        <div class="stat"><span data-i18n="brushes">Брашей</span><b id="s-solids">—</b></div>
+        <div class="stat"><span data-i18n="polygons">Полигонов</span><b id="s-faces">—</b></div>
+        <div class="stat"><span data-i18n="triangles">Треугольников</span><b id="s-tris">—</b></div>
+        <div class="stat"><span data-i18n="entities">Сущностей</span><b id="s-ents">—</b></div>
+        <div class="stat"><span data-i18n="materials">Материалов</span><b id="s-mats">—</b></div>
+        <div class="stat"><span data-i18n="vtf_tex">Текстур VTF</span><b id="s-tex">—</b></div>
+        <div class="stat"><span data-i18n="entity_icons">Иконок сущностей</span><b id="s-icons">—</b></div>
+        <div class="stat"><span data-i18n="map_size">Размер карты</span><b id="s-size">—</b></div>
+        <div class="sep"></div>
+        <h3 data-i18n="display">Отображение</h3>
+        <label class="chk"><input type="checkbox" id="optTriggers"> <span data-i18n="show_triggers">Показывать триггеры</span></label>
+        <label class="chk"><input type="checkbox" id="optEntities" checked> <span data-i18n="show_entities">Показывать сущности</span></label>
+        <label class="chk"><input type="checkbox" id="optEntIcons" checked> <span data-i18n="show_entity_icons">Иконки сущностей</span></label>
+        <label class="chk"><input type="checkbox" id="optEntIconsTop" checked> <span data-i18n="icons_on_top">Иконки сквозь стены</span></label>
+        <div class="stat"><span data-i18n="icon_size">Размер иконок</span>
+          <select id="vmfIconSize" style="background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:2px 6px;font-size:12px">
+            <option value="48">48</option>
+            <option value="96" selected>96</option>
+            <option value="160">160</option>
+            <option value="256">256</option>
+          </select>
+        </div>
+        <label class="chk"><input type="checkbox" id="optGlass" checked> <span data-i18n="glass_transparent">Прозрачное стекло</span></label>
+        <label class="chk"><input type="checkbox" id="optTex" checked> <span data-i18n="textures">Текстуры</span></label>
+        <div class="sep"></div>
+        <h3 data-i18n="screenshot">Скриншот</h3>
+        <label class="chk"><input type="checkbox" id="optHD"> <span data-i18n="hd_quality">HD-качество (×2)</span></label>
+        <label class="chk"><input type="checkbox" id="optUI" checked> <span data-i18n="hide_panels">Скрывать панели</span></label>
+        <div class="sep"></div>
+        <h3 data-i18n="export_glb">Экспорт GLB</h3>
+        <label class="chk"><input type="checkbox" id="optGLBEnts"> <span data-i18n="glb_entities">Сущности</span></label>
+        <label class="chk"><input type="checkbox" id="optGLBTriggers"> <span data-i18n="glb_triggers">Триггеры</span></label>
+        <div class="stat"><span data-i18n="max_size">Макс. размер</span>
+          <select id="glbTexSize" style="background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:2px 6px;font-size:12px">
+            <option value="512">512</option>
+            <option value="1024">1024</option>
+            <option value="2048" selected>2048</option>
+            <option value="4096">4096</option>
+          </select>
+        </div>
+        <div class="sep"></div>
+        <h3 data-i18n="fallback_colors">Запасные цвета</h3>
+        <div class="legend">
+          <i class="c-concrete" data-i18n="c_concrete">бетон</i>
+          <i class="c-metal" data-i18n="c_metal">металл</i>
+          <i class="c-tile" data-i18n="c_tile">плитка</i>
+          <i class="c-glass" data-i18n="c_glass">стекло</i>
+          <i class="c-sign" data-i18n="c_sign">знаки</i>
+          <i class="c-light" data-i18n="c_light">свет</i>
+        </div>
+      </div>
+      <div id="vmfDropzone">
+        <div class="card" id="vmfCard">
+          <div class="ico">🗺️</div>
+          <h2 data-i18n="drop_vmf_title">Перетащите .vmf или папку</h2>
+          <p data-i18n-html="drop_vmf_desc">или нажмите, чтобы выбрать файл<br>Папку с <b>.vtf</b> текстурами и иконками <b>.png</b> можно дропнуть отдельно</p>
+          <small data-i18n="drop_vmf_small">Всё сохраняется локально в браузере (иконки — только в память)</small>
+        </div>
+      </div>
+      <div id="vmfStatus"><span class="dot"></span><span id="vmfStatusText" data-i18n="waiting_file">Ожидание файла…</span></div>
+      <div id="vmfHint" data-i18n="mouse_hint">ЛКМ — вращение · ПКМ — панорама · Колесо — зум</div>
+      <div id="vmfFlash"></div>
+      <input type="file" id="vmfFileInput" accept=".vmf,.txt,.vmx,.map" style="display:none">
+      <input type="file" id="vmfTexInput" webkitdirectory directory multiple style="display:none">
+    </section>
+
+    <section id="paneModels" class="pane">
+      <aside id="side">
+        <div class="s-head">
+          <button class="burger" id="burgerBtn" data-i18n-title="hide_panel">
+            <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          </button>
+          <h2 data-i18n="inspector">Инспектор</h2>
+          <span class="mini" id="sMini">—</span>
+        </div>
+        <div class="s-body">
+          <div class="load-btns">
+            <button class="load-btn" id="btnModels">
+              <span class="ico vmf">📦</span>
+              <span class="txt"><b data-i18n="load_models">Загрузить модели</b><small>.mdl .vvd .vtx .phy</small></span>
+            </button>
+            <button class="load-btn" id="btnMats">
+              <span class="ico mats">🎨</span>
+              <span class="txt"><b data-i18n="load_mats">Загрузить материалы</b><small>.vtf materials</small></span>
+            </button>
+          </div>
+          <div class="s-section" id="secModel" style="display:none">
+            <h3 data-i18n="model">Модель</h3>
+            <select id="modelSel" class="s-select"></select>
+          </div>
+          <div class="s-section" id="secOpts" style="display:none">
+            <h3 data-i18n="display">Отображение</h3>
+            <label class="s-check"><input type="checkbox" id="chkTex" checked> <span data-i18n="textures_vtf">Текстуры VTF</span></label>
+            <label class="s-check"><input type="checkbox" id="chkSkin"> <span data-i18n="apply_skin">Применять скелет</span></label>
+            <label class="s-check"><input type="checkbox" id="chkPhy"> <span data-i18n="show_phy">Показывать .phy</span></label>
+            <label class="s-check"><input type="checkbox" id="chkFit" checked> <span data-i18n="auto_fit">Авто-кадрирование</span></label>
+          </div>
+          <div class="s-section" id="secStats" style="display:none">
+            <h3 data-i18n="info">Информация</h3>
+            <div class="s-info" id="stats"></div>
+          </div>
+          <div class="s-empty" id="sEmpty">
+            <span class="big">📦</span>
+            <span data-i18n-html="load_models_first">Загрузите модели,<br>затем материалы</span>
+          </div>
+          <input type="file" id="pickModels" multiple webkitdirectory directory hidden>
+          <input type="file" id="pickMats" multiple webkitdirectory directory hidden>
+        </div>
+      </aside>
+      <div id="vp">
+        <canvas id="modelCanvas"></canvas>
+        <button id="burgerFloat" data-i18n-title="show_panel">
+          <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+        <div class="vp-tool">
+          <button id="btnGrid" class="on" data-i18n-title="grid">▦</button>
+          <button id="btnWire" data-i18n-title="wireframe">⊞</button>
+          <button id="btnPhy" data-i18n-title="collisions">◈</button>
+          <button id="btnSun" class="on" data-i18n-title="light">☀</button>
+          <div class="div"></div>
+          <button id="btnSpin" data-i18n-title="rotation">↻</button>
+          <button id="btnFit" data-i18n-title="show_all">⌖</button>
+        </div>
+        <div class="vp-hud" data-i18n="mouse_hint_m">ЛКМ — вращение · колесо — зум · ПКМ — панорама</div>
+        <div class="vp-fps"><b id="fps">—</b> FPS</div>
+        <div class="vp-load" id="vLoad"><span></span><div data-i18n="loading">Загрузка…</div></div>
+      </div>
+    </section>
+
+    <section id="paneTex" class="pane">
+      <div class="t-inner">
+        <div class="t-drop" id="tDrop">
+          <div class="big">📁</div>
+          <div class="t" data-i18n="drop_tex_title">Перетащи папку или .vtf файлы</div>
+          <div class="s" data-i18n="drop_tex_sub">DXT1/3/5 · BGRA/BGRX8888 · RGB565 · BGRA4444 · I8 · IA88 · A8 и др.</div>
+          <div class="t-btns">
+            <button class="t-btn primary" id="tPickFolder">📁 <span data-i18n="pick_folder">Выбрать папку</span></button>
+            <button class="t-btn" id="tPickFiles" data-i18n="pick_files">Выбрать файлы</button>
+            <button class="t-btn" id="tClear" data-i18n="clear_list">Очистить список</button>
+          </div>
+        </div>
+        <input type="file" id="tFileInput" multiple accept=".vtf" hidden>
+        <input type="file" id="tFolderInput" webkitdirectory directory multiple hidden>
+        <section id="tViewerSec" class="t-card" hidden>
+          <div class="t-top">
+            <div class="t-bc" id="tBc"></div>
+            <div class="t-mini">
+              <span><span data-i18n="vtf_label">VTF</span>: <b id="tTotal">0</b></span>
+              <span><span data-i18n="skipped_label">Пропущено</span>: <b id="tSkip">0</b></span>
+            </div>
+          </div>
+          <div class="t-chips" id="tChips"></div>
+          <div class="t-view" id="tView">
+            <div class="t-ph"><span class="big">🖼️</span><span data-i18n="pick_vtf">Выбери .vtf файл в списке ниже</span></div>
+          </div>
+          <div class="t-ctrl">
+            <label data-i18n="mipmap">Мипмап:</label><select class="t-sel" id="tMip"></select>
+            <label data-i18n="frame">Кадр:</label><select class="t-sel" id="tFrame"></select>
+            <button class="t-btn primary" id="tPng" style="margin-left:auto" data-i18n="download_png">⬇ Скачать PNG</button>
+          </div>
+          <div id="tWarn"></div>
+          <div class="t-bhead">
+            <span class="title" data-i18n-html="contents_emoji">📂 Содержимое</span>
+            <input class="t-search" id="tSearch" type="search" data-i18n-placeholder="search_all" placeholder="Поиск по всем папкам…">
+            <span class="t-count" id="tCount"></span>
+          </div>
+          <div class="t-list" id="tList"></div>
+        </section>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<div id="storageModal">
+  <div class="m">
+    <div class="m-h">
+      <h3>💾 <span data-i18n="storage_title">Хранилище файлов</span></h3>
+      <button class="close" id="stClose">×</button>
+    </div>
+    <div class="m-b">
+      <div class="st-info">
+        <span><span data-i18n="files_count">Файлов:</span> <b id="stCount">0</b></span>
+        <span><span data-i18n="total_size">Объём:</span> <b id="stSize">0 Б</b></span>
+        <span><span data-i18n="quota">Место:</span> <b id="stQuota">—</b></span>
+      </div>
+      <div id="stList"></div>
+    </div>
+    <div class="m-f">
+      <button class="btn" id="stClearVtf" data-i18n="del_vtf">🗑 Удалить все .vtf</button>
+      <button class="btn" id="stClearAll" style="color:#f85149" data-i18n="del_all">🗑 Удалить всё</button>
+      <button class="btn primary" id="stApply" style="margin-left:auto" data-i18n="apply">✓ Применить</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
