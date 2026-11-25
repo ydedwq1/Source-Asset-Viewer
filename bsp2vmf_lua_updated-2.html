@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BSP → VMF конвертер</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f4f5f7;--card:#fff;--tx:#1b1f24;--mut:#667;--bd:#d6d9de;--ac:#e8730c;--log:#eef0f3}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e1116;--card:#171b22;--tx:#e6e9ee;--mut:#8b94a3;--bd:#2a3340;--ac:#ff8a2a;--log:#0b0e12;color-scheme:dark}}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:24px;margin:0 0 4px}
+p.sub{color:var(--mut);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:14px}
+#drop{border:2px dashed var(--bd);border-radius:12px;padding:36px 16px;text-align:center;cursor:pointer;color:var(--mut);transition:.15s}
+#drop.over,#drop:hover{border-color:var(--ac);color:var(--tx)}
+label.o{display:flex;gap:8px;align-items:center;margin:6px 0}
+button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:10px 18px;font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.st{background:var(--log);border-radius:8px;padding:10px;text-align:center}
+.st b{display:block;font-size:20px}.st span{color:var(--mut);font-size:12px}
+#log{background:var(--log);border-radius:8px;padding:10px;font:12px/1.5 ui-monospace,Consolas,monospace;max-height:200px;overflow:auto;white-space:pre-wrap;margin:0}
+.err{color:#e5484d}
+ul{margin:6px 0 0;padding-left:18px;color:var(--mut);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<h1>BSP → VMF / MAP конвертер</h1>
+<p class="sub">Source BSP → VMF (с Displacement) и GoldSrc BSP → MAP прямо в браузере. Результат: ZIP с картой, pakfile, .wad и DECOMPILATION-NOTES.txt. Файл никуда не загружается.</p>
+
+<div class="card">
+  <div id="drop">Перетащите .bsp сюда или нажмите для выбора</div>
+  <input id="file" type="file" accept=".bsp" hidden>
+</div>
+
+<div class="card">
+  <label class="o"><input type="checkbox" id="oEnt" checked> Экспортировать сущности (entities)</label>
+  <label class="o"><input type="checkbox" id="oDetail" checked> func_detail из CONTENTS_DETAIL brush-ей</label>
+  <label class="o"><input type="checkbox" id="oBrushEnt" checked> Брашевые сущности (func_*, trigger_*)</label>
+  <label class="o"><input type="checkbox" id="oDisp" checked> Displacement (карты высот)</label>
+  <label class="o"><input type="checkbox" id="oTools" checked> Восстанавливать tool-текстуры (clip, nodraw, skip, hint…)</label>
+  <label class="o">Игра: <select id="game"><option value="src">Source 2013 / другая</option><option value="css">Counter-Strike: Source</option><option value="csgo">CS:GO</option><option value="l4d2">Left 4 Dead 2</option><option value="gmod">Garry’s Mod</option></select></label>
+  <label class="o"><input type="checkbox" id="oPak" checked> Извлекать embedded-файлы (pakfile: materials/, models/…)</label>
+  <label class="o"><input type="checkbox" id="oSmart" checked> Умная распаковка (пропускать файлы, созданные vbsp)</label>
+  <div style="margin-top:10px"><button id="go" disabled>Конвертировать и скачать ZIP</button></div>
+</div>
+
+<div class="card"><div class="grid" id="stats"></div></div>
+<div class="card"><pre id="log">Ожидание файла…</pre></div>
+
+<div class="card"><b>Ограничения</b>
+<ul>
+<li>Source 1 (VBSP v19–v21) и GoldSrc (BSP v29/v30). Перед чтением Source BSP проверяются диапазоны lump-ов и перекрытия. Сжатые LZMA-lump-ы пока не распаковываются.</li>
+<li>Occluder-ы пока не восстанавливаются; areaportal сопоставляются только по порядку. Эти ограничения отмечаются в отчёте.</li>
+<li>Brush-ы реконструируются из плоскостей, поэтому форма может незначительно отличаться от оригинала.</li>
+</ul></div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const logEl=$('log');
+const log=(m,e)=>{const line=document.createElement('span');line.textContent=String(m);if(e)line.className='err';if(logEl.textContent)logEl.appendChild(document.createTextNode('\n'));logEl.appendChild(line);logEl.scrollTop=1e9};
+let bspBuf=null,bspName='map';
+const f=n=>String(+n.toFixed(4)),f8x=n=>String(+n.toFixed(8));
+
+/* ---------- файл ---------- */
+const drop=$('drop'),inp=$('file');
+drop.onclick=()=>inp.click();
+inp.onchange=()=>inp.files[0]&&load(inp.files[0]);
+['dragover','dragenter'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('over')}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over')}));
+drop.addEventListener('drop',ev=>{const fl=ev.dataTransfer.files[0];fl&&load(fl)});
+async function load(file){
+  bspBuf=await file.arrayBuffer();bspName=file.name.replace(/\.bsp$/i,'');
+  drop.textContent=file.name+' ('+(file.size/1048576).toFixed(1)+' МБ)';
+  $('go').disabled=false;logEl.textContent='';log('Файл загружен. Нажмите «Конвертировать».');
+}
+function showStats(s){
+  $('stats').innerHTML=[['Brush-ей',s.brushes],['Сторон',s.sides],['Displacement',s.disps],['Сущностей',s.ents],['Brush-сущ.',s.brushEnts]]
+    .map(([k,v])=>`<div class="st"><b>${v}</b><span>${k}</span></div>`).join('');
+}
+
+/* ---------- чтение BSP ---------- */
+function validateSourceBSP(buf,dv){
+  const issues=[];
+  if(buf.byteLength<1036)throw new Error('Файл короче заголовка VBSP (1036 байт)');
+  if(dv.getInt32(0,true)!==0x50534256)throw new Error('это не VBSP-файл (Source 1)');
+  const ver=dv.getInt32(4,true);
+  if(ver<19||ver>21)throw new Error('Версия BSP '+ver+' не поддерживается текущим парсером (ожидается v19–v21)');
+  const ranges=[];
+  for(let i=0;i<64;i++){
+    const h=8+i*16,off=dv.getInt32(h,true),len=dv.getInt32(h+4,true),version=dv.getInt32(h+8,true),fourCC=dv.getInt32(h+12,true);
+    if(off<0||len<0)throw new Error('Некорректный lump '+i+': отрицательное смещение или размер');
+    if(off>buf.byteLength||len>buf.byteLength-off)throw new Error('Lump '+i+' выходит за границы файла');
+    if(len&&off<1036)throw new Error('Lump '+i+' перекрывает заголовок BSP');
+    if(len)ranges.push({i,start:off,end:off+len});
+    if(fourCC!==0&&len<4)issues.push('Lump '+i+': указан FourCC, но данных меньше 4 байт');
+    if(fourCC!==0&&fourCC!==0x414d5a4c)issues.push('Lump '+i+': неизвестный FourCC 0x'+(fourCC>>>0).toString(16));
+  }
+  ranges.sort((a,b)=>a.start-b.start);
+  for(let i=1;i<ranges.length;i++)if(ranges[i].start<ranges[i-1].end)issues.push('Lump '+ranges[i].i+' пересекается с lump '+ranges[i-1].i);
+  return {ver,issues};
+}
+function parseBSP(buf){
+  const dv=new DataView(buf),validation=validateSourceBSP(buf,dv);
+  const ver=validation.ver;
+  validation.issues.forEach(m=>log('Проверка BSP: '+m,1));
+  log('Проверка заголовка и диапазонов lump-ов завершена');
+  const L=[];
+  for(let i=0;i<64;i++){const o=8+i*16;L.push({o:dv.getInt32(o,true),l:dv.getInt32(o+4,true),c:dv.getInt32(o+12,true)})}
+  for(const i of [0,1,2,5,6,10,14,17,18,19,26,33,43,44])
+    if(L[i].c)throw new Error('лампа '+i+' сжата LZMA');
+  log('VBSP v'+ver);
+  const i32=o=>dv.getInt32(o,true),i16=o=>dv.getInt16(o,true),u16=o=>dv.getUint16(o,true),f32=o=>dv.getFloat32(o,true);
+  const cnt=(i,s)=>Math.floor(L[i].l/s);
+  const ents=parseEnts(new TextDecoder().decode(new Uint8Array(buf,L[0].o,L[0].l)).replace(/\0+$/,''));
+  const planes=[];for(let i=0;i<cnt(1,20);i++){const o=L[1].o+i*20;planes.push([f32(o),f32(o+4),f32(o+8),f32(o+12)])}
+  const sd=new Uint8Array(buf,L[43].o,L[43].l),dec=new TextDecoder();
+  const str=off=>{let e=off;while(sd[e])e++;return dec.decode(sd.subarray(off,e))};
+  const strTab=[];for(let i=0;i<cnt(44,4);i++)strTab.push(i32(L[44].o+i*4));
+  const texdata=[];for(let i=0;i<cnt(2,32);i++)texdata.push(cleanTex(str(strTab[i32(L[2].o+i*32+12)])));
+  const tdim=[];for(let i=0;i<cnt(2,32);i++)tdim.push([i32(L[2].o+i*32+16),i32(L[2].o+i*32+20)]);
+  const texinfo=[];for(let i=0;i<cnt(6,72);i++){const o=L[6].o+i*72,v=[];for(let k=0;k<8;k++)v.push(f32(o+k*4));
+    texinfo.push({u:v.slice(0,4),v:v.slice(4,8),flags:i32(o+64),dim:tdim[i32(o+68)]||[0,0],lm:(()=>{const ls=(Math.hypot(f32(o+32),f32(o+36),f32(o+40))+Math.hypot(f32(o+48),f32(o+52),f32(o+56)))/2;return ls>0.001?Math.round(1/ls):16})(),mat:texdata[i32(o+68)]||'tools/toolsnodraw'})}
+  const brushes=[];for(let i=0;i<cnt(18,12);i++){const o=L[18].o+i*12;brushes.push({first:i32(o),num:i32(o+4),contents:i32(o+8)})}
+  const sides=[];for(let i=0;i<cnt(19,8);i++){const o=L[19].o+i*8;sides.push({plane:u16(o),ti:i16(o+2),disp:i16(o+4),bevel:i16(o+6)})}
+  const dispinfo=[];for(let i=0;i<cnt(26,176);i++){const o=L[26].o+i*176;
+    dispinfo.push({start:[f32(o),f32(o+4),f32(o+8)],vs:i32(o+12),power:i32(o+20),face:u16(o+36)})}
+  const dverts=[];for(let i=0;i<cnt(33,20);i++){const o=L[33].o+i*20;dverts.push([f32(o),f32(o+4),f32(o+8),f32(o+12),f32(o+16)])}
+  const nodes=[];for(let i=0;i<cnt(5,32);i++){const o=L[5].o+i*32;nodes.push([i32(o+4),i32(o+8)])}
+  const ls=ver<=19?56:32,leafs=[];
+  for(let i=0;i<cnt(10,ls);i++){const o=L[10].o+i*ls;leafs.push([u16(o+24),u16(o+26)])}
+  const lb=[];for(let i=0;i<cnt(17,2);i++)lb.push(u16(L[17].o+i*2));
+  const models=[];for(let i=0;i<cnt(14,48);i++)models.push(i32(L[14].o+i*48+36));
+  log(`brushes ${brushes.length}, sides ${sides.length}, dispinfo ${dispinfo.length}, entities ${ents.length}`);
+  const aps=[];for(let i=0;i<cnt(21,12);i++)aps.push(u16(L[21].o+i*12));
+  const dkey=new Map();
+  try{
+    const vt=[];for(let i=0;i<cnt(3,12);i++){const o=L[3].o+i*12;vt.push([f32(o),f32(o+4),f32(o+8)])}
+    const ed=[];for(let i=0;i<cnt(12,4);i++)ed.push([u16(L[12].o+i*4),u16(L[12].o+i*4+2)]);
+    dispinfo.forEach((di,i)=>{
+      const fo=L[7].o+di.face*56,fe=i32(fo+4),ne=i16(fo+8),pts=[];
+      for(let k=0;k<ne;k++){const se=i32(L[13].o+(fe+k)*4);pts.push(vt[se>=0?ed[se][0]:ed[-se][1]])}
+      const pl=planes[u16(fo)],sg=dv.getUint8(fo+2)?-1:1;
+      const fnv=[pl[0]*sg,pl[1]*sg,pl[2]*sg];di.pts=pts;di.fn=fnv;di.ti=i16(fo+10);
+      dkey.set(pts.map(q=>q.map(Math.round).join(',')).sort().join('|'),{i,n:fnv});
+    });
+  }catch(e){log('Не удалось связать displacement с гранями: '+e.message,1)}
+  const cubes=[];for(let i=0;i<cnt(42,16);i++){const o=L[42].o+i*16;cubes.push([i32(o),i32(o+4),i32(o+8),i32(o+12)])}
+  const props=[];let propNote='';
+  try{
+    const gl=L[35],ng=gl.l>=4?i32(gl.o):0;
+    for(let g=0;g<ng;g++){
+      const h=gl.o+4+g*16;if(i32(h)!==0x73707270)continue;
+      if(u16(h+4)&1){propNote='static props сжаты (LZMA), пропущены';break}
+      let p=i32(h+8);const end=p+i32(h+12),nd=i32(p);p+=4;
+      const dict=[];for(let k=0;k<nd;k++){let nm='';for(let c=0;c<128;c++){const ch=dv.getUint8(p+k*128+c);if(!ch)break;nm+=String.fromCharCode(ch)}dict.push(nm)}
+      p+=nd*128;const nl=i32(p);p+=4+nl*2;const np=i32(p);p+=4;
+      const stride=np?Math.floor((end-p)/np):0;
+      for(let k=0;k<np&&stride>=56;k++){const o=p+k*stride;
+        props.push({origin:[f32(o),f32(o+4),f32(o+8)],angles:[f32(o+12),f32(o+16),f32(o+20)],model:dict[u16(o+24)]||'',solid:dv.getUint8(o+30),flags:dv.getUint8(o+31),skin:i32(o+32),fmin:f32(o+36),fmax:f32(o+40),lo:stride>=56?[f32(o+44),f32(o+48),f32(o+52)]:null,fs:stride>=60?f32(o+56):1,mnx:stride>=64?u16(o+60):0,mxx:stride>=64?u16(o+62):0})}
+    }
+  }catch(e){propNote='ошибка чтения static props'}
+  const overlays=[];let faceInfo=()=>null;
+  try{
+    const vt=[];for(let i=0;i<cnt(3,12);i++){const o=L[3].o+i*12;vt.push([f32(o),f32(o+4),f32(o+8)])}
+    const ed=[];for(let i=0;i<cnt(12,4);i++)ed.push([u16(L[12].o+i*4),u16(L[12].o+i*4+2)]);
+    faceInfo=fi=>{
+      if(fi<0||fi>=cnt(7,56))return null;
+      const fo=L[7].o+fi*56;
+      const fe=i32(fo+4),ne=i16(fo+8);let c=[0,0,0];
+      if(!ne)return null;
+      for(let k=0;k<ne;k++){const se=i32(L[13].o+(fe+k)*4),v=vt[se>=0?ed[se][0]:ed[-se][1]];c[0]+=v[0];c[1]+=v[1];c[2]+=v[2]}
+      c=c.map(x=>x/ne);
+      const pl=planes[u16(fo)],sg=dv.getUint8(fo+2)?-1:1;
+      return {c,n:[pl[0]*sg,pl[1]*sg,pl[2]*sg],disp:i16(fo+12)};
+    };
+    if(L[45]&&!L[45].c)for(let i=0;i<cnt(45,352);i++){
+      const o=L[45].o+i*352,fcr=u16(o+6),n=fcr&0x3fff,fcs=[];
+      for(let k=0;k<n&&k<64;k++)fcs.push(i32(o+8+k*4));
+      const pt=k=>[f32(o+280+k*12),f32(o+284+k*12)];
+      overlays.push({ti:i16(o+4),order:fcr>>14,faces:fcs,u:[f32(o+264),f32(o+268)],v:[f32(o+272),f32(o+276)],
+        uv:[pt(0),pt(1),pt(2),pt(3)],bu:[f32(o+288),f32(o+300),f32(o+312)],
+        org:[f32(o+328),f32(o+332),f32(o+336)],nrm:[f32(o+340),f32(o+344),f32(o+348)]});
+    }
+  }catch(e){log('Не удалось прочитать overlays: '+e.message,1)}
+  const pak=L[40].l>0?new Uint8Array(buf,L[40].o,L[40].l):null;
+  return {ents,planes,texinfo,brushes,sides,dispinfo,dverts,nodes,leafs,lb,models,aps,dkey,cubes,props,propNote,overlays,faceInfo,pak,ver,rev:dv.getInt32(1032,true),bad:0};
+}
+function parseEnts(txt){
+  // Valve entity text uses quoted tokens; preserve escaped quotes/backslashes instead of line-regex parsing.
+  const out=[];let cur=null,i=0;
+  const token=()=>{
+    while(i<txt.length&&/\s/.test(txt[i]))i++;
+    if(i>=txt.length)return null;
+    if(txt[i]==='{'||txt[i]==='}')return txt[i++];
+    if(txt[i]!=='\"'){while(i<txt.length&&!/\s/.test(txt[i]))i++;return null;}
+    i++;let value='';
+    while(i<txt.length){const ch=txt[i++];if(ch==='\"')break;if(ch==='\\'&&i<txt.length){const n=txt[i++];value+=n==='n'?'\n':n==='r'?'\r':n;}else value+=ch;}
+    return value;
+  };
+  let t;while((t=token())!==null){
+    if(t==='{'){if(cur)out.push(cur);cur=[];continue;}
+    if(t==='}'){if(cur)out.push(cur);cur=null;continue;}
+    if(cur){const value=token();if(value!==null&&value!=='{'&&value!=='}')cur.push([t,value]);}
+  }
+  return out;
+}
+
+/* ---------- геометрия brush-а ---------- */
+const EPS=0.001;
+function bigQuad([nx,ny,nz,d]){
+  const up=Math.abs(nz)<0.9?[0,0,1]:[1,0,0];
+  let u=[ny*up[2]-nz*up[1],nz*up[0]-nx*up[2],nx*up[1]-ny*up[0]];
+  const ul=Math.hypot(...u);u=u.map(x=>x/ul);
+  const v=[ny*u[2]-nz*u[1],nz*u[0]-nx*u[2],nx*u[1]-ny*u[0]];
+  const c=[nx*d,ny*d,nz*d],M=65536,p=(a,b)=>[0,1,2].map(i=>c[i]+u[i]*M*a+v[i]*M*b);
+  return [p(-1,-1),p(1,-1),p(1,1),p(-1,1)];
+}
+function clip(poly,[nx,ny,nz,d]){
+  const out=[],n=poly.length;
+  for(let i=0;i<n;i++){
+    const a=poly[i],b=poly[(i+1)%n];
+    const da=nx*a[0]+ny*a[1]+nz*a[2]-d,db=nx*b[0]+ny*b[1]+nz*b[2]-d;
+    if(da<=EPS)out.push(a);
+    if((da<-EPS&&db>EPS)||(da>EPS&&db<-EPS)){const t=da/(da-db);out.push([a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t])}
+  }
+  return out;
+}
+function brushPolys(B,bi){
+  const br=B.brushes[bi],ps=B.sides.slice(br.first,br.first+br.num).filter(s=>{if(B.planes[s.plane])return true;B.bad++;return false}),out=[];
+  for(const s of ps){
+    if(s.bevel)continue;
+    let poly=bigQuad(B.planes[s.plane]);
+    for(const t of ps){if(t.plane===s.plane||t.bevel)continue;poly=clip(poly,B.planes[t.plane]);if(poly.length<3)break}
+    const longEdges=poly.filter((v,i)=>{const w=poly[(i+1)%poly.length];return Math.hypot(v[0]-w[0],v[1]-w[1],v[2]-w[2])>0.1}).length;  // WindingIsTiny
+    if(poly.length>=3&&longEdges>=3&&!poly.some(v=>v.some(c=>Math.abs(c)>32768)))out.push({s,poly});
+  }
+  return out;
+}
+function modelRanges(B){
+  const r=B.models.map(h=>{
+    let bmin=1e9,bmax=-1;const st=[h];
+    while(st.length){
+      const i=st.pop();
+      if(i>=0){const n=B.nodes[i];if(n)st.push(n[0],n[1])}
+      else{const lf=B.leafs[-1-i];if(lf)for(let k=0;k<lf[1];k++){const b=B.lb[lf[0]+k];if(b<bmin)bmin=b;if(b>bmax)bmax=b}}
+    }
+    return {bmin,bmax};
+  });
+  const res=r.map(()=>null);
+  if(r[0]&&r[0].bmax>=0)res[0]=[0,r[0].bmax];   // мир: brush-и displacement стоят в начале списка и не имеют ссылок из листьев
+  let prev=r[0]?r[0].bmax:-1;
+  r.map((x,i)=>({x,i})).filter(o=>o.i>0&&o.x.bmax>=0).sort((p,q)=>p.x.bmin-q.x.bmin).forEach(({x,i})=>{
+    res[i]=[Math.min(x.bmin,Math.max(prev+1,0)),x.bmax];prev=Math.max(prev,x.bmax);
+  });
+  return res;
+}
+function modelBrushes(B,mi){
+  const R=B._rng||(B._rng=modelRanges(B)),rg=R[mi],r=[];
+  if(rg)for(let b=rg[0];b<=rg[1]&&b<B.brushes.length;b++)if(!(B.brushes[b].contents&0x8000))r.push(b);
+  return r;
+}
+
+/* ---------- ZIP / WAD / pakfile ---------- */
+const enc=s=>new TextEncoder().encode(s);
+const CRCT=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+const crc32=b=>{let c=~0;for(let i=0;i<b.length;i++)c=CRCT[(c^b[i])&255]^(c>>>8);return ~c>>>0};
+function makeZip(files){
+  const parts=[],cd=[];let off=0;
+  for(const f of files){
+    const nm=enc(f.name),d=f.data,crc=crc32(d);
+    const h=new DataView(new ArrayBuffer(30));
+    h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x800,true);
+    h.setUint32(14,crc,true);h.setUint32(18,d.length,true);h.setUint32(22,d.length,true);h.setUint16(26,nm.length,true);
+    parts.push(new Uint8Array(h.buffer),nm,d);
+    const c=new DataView(new ArrayBuffer(46));
+    c.setUint32(0,0x02014b50,true);c.setUint16(4,20,true);c.setUint16(6,20,true);c.setUint16(8,0x800,true);
+    c.setUint32(16,crc,true);c.setUint32(20,d.length,true);c.setUint32(24,d.length,true);c.setUint16(28,nm.length,true);c.setUint32(42,off,true);
+    cd.push(new Uint8Array(c.buffer),nm);off+=30+nm.length+d.length;
+  }
+  let cdl=0;for(const p of cd)cdl+=p.length;
+  const e=new DataView(new ArrayBuffer(22));
+  e.setUint32(0,0x06054b50,true);e.setUint16(8,files.length,true);e.setUint16(10,files.length,true);e.setUint32(12,cdl,true);e.setUint32(16,off,true);
+  return new Blob([...parts,...cd,new Uint8Array(e.buffer)],{type:'application/zip'});
+}
+const isVbspGenerated=n=>/^maps\/[^\/]+\/.+_(wvt_patch|depth_-?\d+|-?\d+_-?\d+_-?\d+)\.(vmt|vtf)$/i.test(n)||/cubemapdefault/i.test(n);
+async function extractPak(pak){
+  const out=[],dv=new DataView(pak.buffer,pak.byteOffset,pak.byteLength);
+  let e=pak.length-22;while(e>=0&&dv.getUint32(e,true)!==0x06054b50)e--;
+  if(e<0)return out;
+  const n=dv.getUint16(e+10,true);let p=dv.getUint32(e+16,true);
+  for(let i=0;i<n;i++){
+    if(p+46>pak.length||dv.getUint32(p,true)!==0x02014b50)break;
+    const method=dv.getUint16(p+10,true),cs=dv.getUint32(p+20,true),nl=dv.getUint16(p+28,true),el=dv.getUint16(p+30,true),cl=dv.getUint16(p+32,true),lo=dv.getUint32(p+42,true);
+    const name=new TextDecoder().decode(pak.subarray(p+46,p+46+nl));p+=46+nl+el+cl;
+    if(name.endsWith('/'))continue;
+    if($('oSmart').checked&&isVbspGenerated(name))continue;
+    const ds=lo+30+dv.getUint16(lo+26,true)+dv.getUint16(lo+28,true),raw=pak.subarray(ds,ds+cs);
+    try{
+      if(method===0)out.push({name:'pakfile/'+name,data:raw});
+      else if(method===8){
+        const s=new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        out.push({name:'pakfile/'+name,data:new Uint8Array(await new Response(s).arrayBuffer())});
+      }
+    }catch(err){log('Не удалось распаковать '+name,1)}
+  }
+  return out;
+}
+function buildWad(items){
+  let off=12;const dir=items.map(it=>{const d={...it,off};off+=it.data.length;return d});
+  const out=new Uint8Array(off+items.length*32),dv=new DataView(out.buffer);
+  out.set([87,65,68,51]);dv.setInt32(4,items.length,true);dv.setInt32(8,off,true);
+  dir.forEach((d,i)=>{
+    out.set(d.data,d.off);const e=off+i*32;
+    dv.setInt32(e,d.off,true);dv.setInt32(e+4,d.data.length,true);dv.setInt32(e+8,d.data.length,true);out[e+12]=0x43;
+    for(let k=0;k<Math.min(15,d.name.length);k++)out[e+16+k]=d.name.charCodeAt(k);
+  });
+  return out;
+}
+
+/* ---------- GoldSrc BSP (v29/v30) → Valve 220 .map ---------- */
+const vs=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],vc=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],vd=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const f8=n=>String(+n.toFixed(8));
+function inPoly(poly,p,n){
+  let pos=0,neg=0;
+  for(let i=0;i<poly.length;i++){const a=poly[i],b=poly[(i+1)%poly.length],s=vd(vc(vs(b,a),vs(p,a)),n);if(s>0.01)pos++;else if(s<-0.01)neg++}
+  return !(pos&&neg);
+}
+function polyArea(p){let s=[0,0,0];for(let i=1;i<p.length-1;i++){const c=vc(vs(p[i],p[0]),vs(p[i+1],p[0]));s=[s[0]+c[0],s[1]+c[1],s[2]+c[2]]}return Math.hypot(...s)/2}
+function goldToMap(buf){
+  const dv=new DataView(buf),ver=dv.getInt32(0,true);
+  const L=[];for(let i=0;i<15;i++)L.push({o:dv.getInt32(4+i*8,true),l:dv.getInt32(8+i*8,true)});
+  const f32=o=>dv.getFloat32(o,true),i32=o=>dv.getInt32(o,true),i16=o=>dv.getInt16(o,true),u16=o=>dv.getUint16(o,true);
+  const rd=(i,sz,fn)=>{const a=[];for(let k=0;k<Math.floor(L[i].l/sz);k++)a.push(fn(L[i].o+k*sz));return a};
+  const ents=parseEnts(new TextDecoder().decode(new Uint8Array(buf,L[0].o,L[0].l)).replace(/\0+$/,''));
+  const planes=rd(1,20,o=>[f32(o),f32(o+4),f32(o+8),f32(o+12)]);
+  const verts=rd(3,12,o=>[f32(o),f32(o+4),f32(o+8)]);
+  const edges=rd(12,4,o=>[u16(o),u16(o+2)]),se=rd(13,4,i32);
+  const texinfo=rd(6,40,o=>({u:[f32(o),f32(o+4),f32(o+8),f32(o+12)],v:[f32(o+16),f32(o+20),f32(o+24),f32(o+28)],mip:i32(o+32)}));
+  const faces=rd(7,20,o=>({first:i32(o+4),n:i16(o+8),ti:i16(o+10)}));
+  const nodes=rd(5,24,o=>({pl:i32(o),c:[i16(o+4),i16(o+6)],first:u16(o+20),n:u16(o+22)}));
+  const leafs=rd(10,28,i32);
+  const models=rd(14,64,o=>({min:[f32(o),f32(o+4),f32(o+8)],max:[f32(o+12),f32(o+16),f32(o+20)],head:i32(o+36)}));
+  const T=[],tex=L[2].o,nt=L[2].l>=4?i32(tex):0;
+  for(let i=0;i<nt;i++){
+    const off=i32(tex+4+i*4);if(off<0){T.push({name:'NULL'});continue}
+    const m=tex+off;let nm='';for(let k=0;k<16;k++){const c=dv.getUint8(m+k);if(!c)break;nm+=String.fromCharCode(c)}
+    const w=dv.getUint32(m+16,true),h=dv.getUint32(m+20,true);
+    T.push({name:nm,m,w,h,emb:dv.getUint32(m+24,true)!==0});
+  }
+  const facePoly=f=>{const p=[];for(let i=0;i<f.n;i++){const s=se[f.first+i];p.push(verts[s>=0?edges[s][0]:edges[-s][1]])}return p};
+  const stats={brushes:0,sides:0,disps:0,ents:0,brushEnts:0};
+  const texFor=sd=>{
+    if(sd.node<0)return -1;
+    const nd=nodes[sd.node],n=planes[nd.pl],cen=[0,1,2].map(a=>sd.poly.reduce((s,v)=>s+v[a],0)/sd.poly.length);
+    const pts=[cen,...sd.poly.map(v=>[0,1,2].map(a=>(v[a]+cen[a])/2))];
+    for(const pt of pts)for(let k=0;k<nd.n;k++){const f=faces[nd.first+k];if(f.ti>=0&&inPoly(facePoly(f),pt,n))return f.ti}
+    return -1;
+  };
+  const brushesOf=mi=>{
+    const m=models[mi],res=[];
+    const cons0=[[1,0,0,m.max[0]],[-1,0,0,-m.min[0]],[0,1,0,m.max[1]],[0,-1,0,-m.min[1]],[0,0,1,m.max[2]],[0,0,-1,-m.min[2]]].map(p=>({p,node:-1}));
+    const mk=cons=>{
+      const sides=[];
+      for(let i=0;i<cons.length;i++){
+        let poly=bigQuad(cons[i].p);
+        for(let j=0;j<cons.length&&poly.length>=3;j++)if(j!==i)poly=clip(poly,cons[j].p);
+        if(poly.length>=3&&polyArea(poly)>0.01)sides.push({p:cons[i].p,node:cons[i].node,poly});
+      }
+      if(sides.length>=4)res.push(sides);
+    };
+    const walk=(c,cons)=>{
+      if(c<0){if(~c!==0&&leafs[~c]===-2)mk(cons);return}
+      const n=nodes[c],pl=planes[n.pl];
+      walk(n.c[0],cons.concat({p:[-pl[0],-pl[1],-pl[2],-pl[3]],node:c}));
+      walk(n.c[1],cons.concat({p:pl,node:c}));
+    };
+    walk(m.head,cons0);return res;
+  };
+  const ax=v=>{const len=Math.hypot(v[0],v[1],v[2])||1;return {s:`${f8(v[0]/len)} ${f8(v[1]/len)} ${f8(v[2]/len)} ${f8(v[3])}`,sc:1/len}};
+  const out=['// Decompiled by bsp2vmf (GoldSrc BSP v'+ver+', Valve 220)'];
+  const writeBrushes=mi=>{
+    for(const sides of brushesOf(mi)){
+      stats.brushes++;out.push('{');
+      for(const sd of sides){
+        stats.sides++;
+        const v=[sd.poly[2],sd.poly[1],sd.poly[0]].map(q=>`( ${f8(q[0])} ${f8(q[1])} ${f8(q[2])} )`).join(' ');
+        const ti=texinfo[texFor(sd)],name=ti&&T[ti.mip]?T[ti.mip].name:'NULL';
+        if(ti){const a=ax(ti.u),b=ax(ti.v);out.push(`${v} ${name} [ ${a.s} ] [ ${b.s} ] 0 ${f8(a.sc)} ${f8(b.sc)}`)}
+        else out.push(`${v} NULL [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1`);
+      }
+      out.push('}');
+    }
+  };
+  ents.forEach((en,e)=>{
+    const mdl=en.find(x=>x[0]==='model'),bm=mdl&&/^\*(\d+)$/.exec(mdl[1]);
+    out.push('{');
+    for(const [k,v] of en){if(bm&&k==='model')continue;out.push(`"${q(k)}" "${q(v)}"`)}
+    if(e===0)out.push('"mapversion" "220"');
+    else stats.ents++;
+    if(e===0)writeBrushes(0);
+    else if(bm&&models[+bm[1]]){stats.brushEnts++;writeBrushes(+bm[1])}
+    out.push('}');
+  });
+  const emb=[],seen=new Set();
+  for(const t of T){
+    if(!t.emb||seen.has(t.name))continue;seen.add(t.name);
+    const size=40+t.w*t.h+(t.w>>1)*(t.h>>1)+(t.w>>2)*(t.h>>2)+(t.w>>3)*(t.h>>3)+2+768;
+    emb.push({name:t.name,data:new Uint8Array(buf.slice(t.m,Math.min(buf.byteLength,t.m+size)))});
+  }
+  return {map:out.join('\n'),wad:emb.length?buildWad(emb):null,embN:emb.length,texN:T.length,stats,ver};
+}
+
+/* ---------- заметки и запуск ---------- */
+let apNote='';
+const notesCommon=['Ограничения:',
+ ' - Это реконструкция, а не байт-в-байт оригинал: visgroup-ы, группы, prefab-ы и точные формы brush-ей не восстанавливаются.'];
+function luaReport(B){
+  const ents=B.ents||[], targets=new Set(ents.map(e=>e.find(x=>x[0]==='targetname')?.[1]).filter(Boolean));
+  const rows=[];
+  ents.forEach((e,i)=>{
+    const get=k=>e.find(x=>x[0].toLowerCase()===k.toLowerCase())?.[1]||'';
+    const cls=get('classname'), code=get('Code');
+    if(cls.toLowerCase()==='lua_run'||/lua_run/i.test(cls)||code){
+      rows.push(`Entity #${i}: classname=${cls||'(нет)'}, targetname=${get('targetname')||'(нет)'}`);
+      if(code) rows.push('Code:\n'+code); else rows.push('Code: (пусто или отсутствует)');
+      rows.push('');
+    }
+    for(const [k,v] of e){
+      if(/^on/i.test(k)&&/RunCode|RunPassedCode/i.test(v)){
+        const parts=v.split('\x1b'), target=parts[1]||'';
+        rows.push(`Output ${k}: ${v}`);
+        if(target&&!targets.has(target)) rows.push(`ВНИМАНИЕ: targetname "${target}" не найден среди сущностей карты.`);
+      }
+    }
+  });
+  return ['MAP LUA REPORT','================','',`Сущностей карты: ${ents.length}`,`Найдено lua_run/Code: ${rows.filter(x=>x.startsWith('Entity #')).length}`,'',...(rows.length?rows:['Явные lua_run или ключи Code не найдены.']),'','Отчёт учитывает только данные, реально записанные в BSP. Внешние addon/autorun Lua-файлы и код, отсутствующий в BSP, восстановить из карты нельзя.'].join('\r\n');
+}
+function notesSource(B,st,pakN){
+  return ['DECOMPILATION-NOTES','===================','',
+    'Движок: Source 1 (VBSP v'+B.ver+'), ревизия карты '+B.rev,
+    'Декомпилятор: bsp2vmf (в браузере), алгоритмы по мотивам BSPSrc',
+    'Профиль tool-текстур: '+$('game').selectedOptions[0].text+($('oTools').checked?'':' (отключено)'),'',
+    `Результат: brush-ей ${st.brushes}, сторон ${st.sides}, displacement ${st.disps}, сущностей ${st.ents}, brush-сущностей ${st.brushEnts}`,
+    `Восстановлено tool-текстур: ${toolFixed}; файлов из pakfile: ${pakN}`,
+    'Areaportal: '+(apNote||'нет'),'',
+    'Признаки защиты/обфускации: '+(B.bad?`найдено ссылок на несуществующие плоскости: ${B.bad}`:'не обнаружены'),'',
+    ...notesCommon,
+    ' - info_overlay читаются и экспортируются эвристически; привязка к граням может отличаться от оригинала.',
+    ' - Occluder-ы пока не восстанавливаются, их brush-и остаются как toolsnodraw.',
+    ' - Areaportal сопоставляются по порядку; при несовпадении структур возможна неверная привязка.',
+    ' - Соседние displacement не сшиваются; Hammer может пересчитать их при открытии.',
+    ' - Из pakfile извлекаются файлы без пересборки; сгенерированные vbsp патчи материалов пропускаются (умная распаковка).'].join('\r\n');
+}
+function notesGold(r){
+  return ['DECOMPILATION-NOTES','===================','',
+    'Движок: GoldSrc (BSP v'+r.ver+')','Декомпилятор: bsp2vmf (в браузере), восстановление brush-ей из BSP-дерева (hull 0)','',
+    `Результат: brush-ей ${r.stats.brushes}, сторон ${r.stats.sides}, сущностей ${r.stats.ents}, brush-сущностей ${r.stats.brushEnts}`,
+    `Текстур в BSP: ${r.texN}, встроенных (в .wad): ${r.embN}`,'',
+    'Признаки защиты/обфускации: не проверялись','',
+    ...notesCommon,
+    ' - В GoldSrc BSP нет исходных brush-ей: каждый brush — это твёрдый лист BSP-дерева, поэтому карта сильно фрагментирована.',
+    ' - Невидимые стороны получают текстуру NULL; жидкости (water/slime/lava) и sky-объёмы не восстанавливаются.',
+    ' - Ключ "wad" берётся из оригинала; встроенные текстуры лежат в отдельном .wad.'].join('\r\n');
+}
+async function runSource(){
+  const bsp=parseBSP(bspBuf),{vmf,stats}=buildVMF(bsp);
+  showStats(stats);if($('oTools').checked)log('Восстановлено tool-текстур: '+toolFixed);
+  const files=[{name:bspName+'.vmf',data:enc(vmf)},{name:'MAP-LUA-REPORT.txt',data:enc(luaReport(bsp))}];let pakN=0;
+  if($('oPak').checked&&bsp.pak){const pf=await extractPak(bsp.pak);pakN=pf.length;files.push(...pf);log('Из pakfile извлечено файлов: '+pakN)}
+  files.push({name:'DECOMPILATION-NOTES.txt',data:enc(notesSource(bsp,stats,pakN))});
+  return files;
+}
+async function runGold(){
+  log('GoldSrc BSP: восстановление brush-ей из дерева (может занять время)…');
+  await new Promise(r=>setTimeout(r,30));
+  const r=goldToMap(bspBuf);showStats(r.stats);
+  const files=[{name:bspName+'.map',data:enc(r.map)}];
+  if(r.wad)files.push({name:bspName+'.wad',data:r.wad});
+  files.push({name:'DECOMPILATION-NOTES.txt',data:enc(notesGold(r))});
+  return files;
+}
+$('go').onclick=async()=>{
+  const btn=$('go');btn.disabled=true;
+  try{
+    logEl.textContent='';toolFixed=0;
+    const id=new DataView(bspBuf).getInt32(0,true);let files;
+    if(id===0x50534256)files=await runSource();
+    else if(id===29||id===30)files=await runGold();
+    else throw new Error('неизвестный формат BSP (нужен VBSP или GoldSrc v29/v30)');
+    const blob=makeZip(files),a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download=bspName+'_decompiled.zip';a.click();
+    log(`Готово: ${a.download} (${(blob.size/1048576).toFixed(2)} МБ, файлов: ${files.length})`);
+  }catch(e){log('Ошибка: '+e.message,1);console.error(e)}
+  btn.disabled=false;
+};
+
+/* ---------- tool-текстуры (по BSPSrc ToolTextureMatcher) ---------- */
+function cleanTex(n){
+  n=n.toLowerCase().replace(/\\/g,'/');
+  for(const re of [/maps\/[^\/]*\/(.+)_wvt_patch/,/maps\/[^\/]*\/(.+)_depth_-?\d+/,/maps\/[^\/]*\/(.+)_-?\d+_-?\d+_-?\d+/])n=n.replace(re,'$1');
+  return n;
+}
+const C={SOLID:1,WINDOW:2,GRATE:8,BLOCKLOS:0x40,OPAQUE:0x80,TEAM2:0x1000,AREAPORTAL:0x8000,PLAYERCLIP:0x10000,MONSTERCLIP:0x20000,C90:0x80000,C180:0x100000,DETAIL:0x8000000,TRANSLUCENT:0x10000000,LADDER:0x20000000};
+const S={SKY2D:2,SKY:4,TRANS:0x10,TRIGGER:0x40,NODRAW:0x80,HINT:0x100,SKIP:0x200,NOLIGHT:0x400};
+const NN=S.NODRAW|S.NOLIGHT,pop=n=>{let c=0;while(n){c+=n&1;n>>>=1}return c};
+const D=(sp,rb,fb,rs)=>[sp,rb,fb,rs];  // surfaceprop, нужные brush-флаги, запрещённые, нужные surface-флаги
+const T='tools/';
+function toolDefs(g){
+  const d={
+    [T+'toolsareaportal']:D(null,C.AREAPORTAL,0,S.NOLIGHT),
+    [T+'toolsblockbullets']:D(null,C.WINDOW|C.TRANSLUCENT,0,S.TRANS|NN),
+    [T+'toolsblocklight']:D(null,C.OPAQUE|C.DETAIL,0,NN),
+    [T+'toolsblock_los']:D(null,C.BLOCKLOS|C.DETAIL,0,NN),
+    [T+'toolsinvisible']:D(null,C.GRATE|C.TRANSLUCENT,C.SOLID,S.TRANS|NN),
+    [T+'toolsinvisibleladder']:D(null,C.GRATE|C.TRANSLUCENT|C.LADDER,C.SOLID,NN),
+    [T+'toolsnodraw']:D(null,0,0,NN),
+    [T+'toolstrigger']:D(null,0,0,NN|S.TRIGGER),
+    [T+'toolshint']:D(null,0,0,NN|S.HINT),
+    [T+'toolsskip']:D(null,0,0,NN|S.SKIP),
+    [T+'toolsclip']:D('default_silent',C.PLAYERCLIP|C.MONSTERCLIP|C.DETAIL,0,NN),
+    [T+'toolsnpcclip']:D('default_silent',C.MONSTERCLIP|C.DETAIL,0,NN),
+    [T+'toolsplayerclip']:D(null,C.PLAYERCLIP|C.DETAIL,0,NN),
+    [T+'toolsskybox']:D('default_silent',C.SOLID,0,S.SKY|S.NOLIGHT),
+    [T+'toolsskybox2d']:D('default_silent',C.SOLID,0,S.SKY|S.SKY2D|S.NOLIGHT)
+  };
+  const clips={concrete:'concrete',dirt:'dirt',glass:'glassfloor',grass:'grass',gravel:'gravel',metal:'metal',metal_sand_barrel:'metal_sand_barrel',metalgrate:'metalgrate',metalvehicle:'metalvehicle',plastic:'plastic',rubber:'rubber',rubbertire:'rubbertire',sand:'sand',snow:'snow',tile:'tile',wood:'wood',wood_basket:'Wood_Basket',wood_crate:'Wood_Crate'};
+  const addClips=skip=>{for(const k in clips)if(k!==skip)d[T+'toolsclip_'+k]=D(clips[k],C.PLAYERCLIP|C.MONSTERCLIP|C.DETAIL,0,NN)};
+  if(g==='css')for(const n of ['toolsclip','toolsnpcclip','toolsplayerclip'])d[T+n][3]=0;
+  if(g==='csgo'){d[T+'toolsgrenadeclip']=D(null,C.C90|C.DETAIL,0,NN);d[T+'toolsdroneclip']=D(null,C.C180|C.DETAIL,0,NN);addClips()}
+  if(g==='l4d2'){d[T+'toolsnodraw_metal']=D('metal',0,0,NN);d[T+'climb']=D(null,C.TEAM2|C.GRATE|C.TRANSLUCENT|C.LADDER,0,S.TRANS|NN);d[T+'invismetal']=D('metal',C.WINDOW|C.TRANSLUCENT,0,S.TRANS|NN)}
+  if(g==='gmod'){d[T+'toolsinvisibleladder']=D(null,C.GRATE|C.TRANSLUCENT|C.LADDER|C.DETAIL,C.SOLID,NN);addClips('snow')}
+  return d;
+}
+let toolFixed=0,_td=null,_tg='';
+function fixTool(orig,bf,sf){
+  const g=$('game').value;if(g!==_tg){_td=toolDefs(g);_tg=g}
+  const isClip=!!(bf&(C.PLAYERCLIP|C.MONSTERCLIP)),skipSurf=isClip&&g!=='csgo'&&g!=='gmod';
+  const od=orig&&_td[orig];let best=null,bs=0;
+  for(const n in _td){
+    const d=_td[n];
+    if(!skipSurf&&od&&(od[0]||'').toLowerCase()!==(d[0]||'').toLowerCase())continue;
+    if((bf&d[1])!==d[1]||(bf&d[2])!==0)continue;
+    if(!skipSurf&&sf!=null&&(sf&d[3])!==d[3])continue;
+    const sc=pop(d[1])+pop(d[2])+(sf==null?0:pop(d[3]));
+    if(sc>bs){bs=sc;best=n}
+  }
+  return best;
+}
+function forcedTool(bf){
+  if($('game').value==='csgo')return null;
+  if(bf&C.AREAPORTAL)return 'tools/toolsareaportal';
+  if((bf&C.PLAYERCLIP)&&(bf&C.MONSTERCLIP))return 'tools/toolsclip';
+  if(bf&C.PLAYERCLIP)return 'tools/toolsplayerclip';
+  if(bf&C.MONSTERCLIP)return 'tools/toolsnpcclip';
+  if((bf&C.LADDER)&&!(bf&C.SOLID))return 'tools/toolsinvisibleladder';
+  if(!(bf&C.SOLID)&&(bf&C.DETAIL)){if(bf&C.OPAQUE)return 'tools/toolsblocklight';if(bf&C.BLOCKLOS)return 'tools/toolsblock_los'}
+  return null;
+}
+function sideMat(B,bi,ti){
+  const bf=B.brushes[bi].contents;
+  {const fm=forcedTool(bf);if(fm){if(!ti||fm!==ti.mat)toolFixed++;return fm}}   // clip/areaportal/ladder/blocklight ВСЕГДА, иначе они становятся обычными твёрдыми nodraw-брашами и вырезают дыры в геометрии
+  if($('oTools').checked){
+    const r=fixTool(ti?ti.mat:null,bf,ti?ti.flags:null);
+    if(r){if(!ti||r!==ti.mat)toolFixed++;return r}
+  }
+  return ti?ti.mat:'tools/toolsnodraw';
+}
+
+/* ---------- запись VMF ---------- */
+const q=s=>String(s).replace(/"/g,"'");
+const qLua=s=>String(s).replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\r/g,'\\r').replace(/\n/g,'\\n');
+function rotMat(a){
+  const [p,y,r]=a.map(x=>x*Math.PI/180),sp=Math.sin(p),cp=Math.cos(p),sy=Math.sin(y),cy=Math.cos(y),sr=Math.sin(r),cr=Math.cos(r);
+  return [[cp*cy,sp*sr*cy-cr*sy,sp*cr*cy+sr*sy],[cp*sy,sp*sr*sy+cr*cy,sp*cr*sy-sr*cy],[-sp,sr*cp,cr*cp]];
+}
+const rot=(M,v)=>[M[0][0]*v[0]+M[0][1]*v[1]+M[0][2]*v[2],M[1][0]*v[0]+M[1][1]*v[1]+M[1][2]*v[2],M[2][0]*v[0]+M[2][1]*v[1]+M[2][2]*v[2]];
+const axisN=(v,dim,org,M)=>{
+  const len=Math.hypot(v[0],v[1],v[2])||1,sc=1/len;let a=[v[0]*sc,v[1]*sc,v[2]*sc],sh=v[3];
+  if(org)sh-=(org[0]*a[0]+org[1]*a[1]+org[2]*a[2])/sc;
+  if(M){
+    a=rot(M,a);
+    let t=org?[-org[0],-org[1],-org[2]]:[0,0,0];t=rot(M,t);if(org)t=[t[0]+org[0],t[1]+org[1],t[2]+org[2]];
+    sh-=(t[0]*a[0]+t[1]*a[1]+t[2]*a[2])/sc;
+  }
+  if(dim)sh%=dim;
+  return {a,txt:`[${f(a[0])} ${f(a[1])} ${f(a[2])} ${Math.round(sh)}] ${f(sc)}`};
+};
+function texAxes(ti,pl,org,M){
+  if(ti){
+    const u=axisN(ti.u,ti.dim[0],org,M),v=axisN(ti.v,ti.dim[1],org,M),c=[u.a[1]*v.a[2]-u.a[2]*v.a[1],u.a[2]*v.a[0]-u.a[0]*v.a[2],u.a[0]*v.a[1]-u.a[1]*v.a[0]];
+    if(Math.abs(pl[0]*c[0]+pl[1]*c[1]+pl[2]*c[2])>=0.02)return [u.txt,v.txt];
+  }
+  const n=[-pl[0],-pl[1],-pl[2]],dx=Math.abs(n[0]),dy=Math.abs(n[1]),dz=Math.abs(n[2]),vd=(dz>dx&&dz>dy)?[0,1,0]:[0,0,1];
+  const cr=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],nz=a=>{const l=Math.hypot(...a)||1;return a.map(x=>x/l)};
+  const t1=nz(cr(n,vd)),t2=nz(cr(n,t1));
+  return [`[${t1.map(f).join(' ')} 0] 0.25`,`[${t2.map(f).join(' ')} 0] 0.25`];
+}
+function buildVMF(B){
+  const o=$('oDisp'),useDisp=o.checked,useEnt=$('oEnt').checked,useBE=$('oBrushEnt').checked;
+  const stats={brushes:0,sides:0,disps:0,ents:0,brushEnts:0};
+  let id=1;const out=[];let lastSid=0,recSides=false;const sideRecs=[],dispSideId=new Map();
+  const kv=(t,k,v)=>out.push(`${t}"${q(k)}" "${q(v)}"`);
+  out.push('versioninfo\n{\n\t"editorversion" "400"\n\t"editorbuild" "8000"\n\t"mapversion" "1"\n\t"formatversion" "100"\n\t"prefab" "0"\n}');
+  out.push('visgroups\n{\n}\nviewsettings\n{\n\t"bSnapToGrid" "1"\n\t"bShowGrid" "1"\n\t"nGridSpacing" "64"\n}');
+
+  const rows=(name,n,fn)=>{
+    out.push(`\t\t\t\t${name}\n\t\t\t\t{`);
+    for(let r=0;r<n;r++)out.push(`\t\t\t\t\t"row${r}" "${fn(r)}"`);
+    out.push('\t\t\t\t}');
+  };
+  const dispIdx=(B,s,poly)=>{
+    if(poly.length!==4)return -1;
+    const e=B.dkey.get(poly.map(q=>q.map(Math.round).join(',')).sort().join('|'));
+    if(!e)return -1;
+    const pl=B.planes[s.plane];
+    return (pl[0]*e.n[0]+pl[1]*e.n[1]+pl[2]*e.n[2]>0.9)?e.i:-1;
+  };
+  const isDispSide=(B,s,poly)=>{
+    const di=B.dispinfo[s.disp];if(s.disp<0||!di||poly.length!==4)return false;
+    const pl=B.planes[s.plane];
+    if(Math.abs(pl[0]*di.start[0]+pl[1]*di.start[1]+pl[2]*di.start[2]-pl[3])>0.5)return false;
+    return poly.some(v=>Math.hypot(v[0]-di.start[0],v[1]-di.start[1],v[2]-di.start[2])<1);
+  };
+  const pick3=poly=>{
+    const n=poly.length;if(n===3)return [poly[2],poly[1],poly[0]];
+    let best=-1,ix=[0,1,2];
+    for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)for(let k=j+1;k<n;k++){
+      const a=poly[i],b=poly[j],c=poly[k],u=[b[0]-a[0],b[1]-a[1],b[2]-a[2]],v=[c[0]-a[0],c[1]-a[1],c[2]-a[2]];
+      const ar=Math.hypot(u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]);if(ar>best){best=ar;ix=[i,j,k]}
+    }
+    return [poly[ix[2]],poly[ix[1]],poly[ix[0]]];
+  };
+  const solid=(bi,org,M)=>{
+    let polys=brushPolys(B,bi);if(polys.length<4)return;
+    if(M||org)polys=polys.map(({s,poly})=>({s,poly:poly.map(v=>{const r=M?rot(M,v):v,o=org||[0,0,0];return [r[0]+o[0],r[1]+o[1],r[2]+o[2]]})}));
+    stats.brushes++;out.push(`\tsolid\n\t{\n\t\t"id" "${id++}"`);
+    for(const {s,poly} of polys){
+      stats.sides++;
+      const ti=s.ti>=0?B.texinfo[s.ti]:null;
+      const p=pick3(poly).map(v=>`(${f8x(v[0])} ${f8x(v[1])} ${f8x(v[2])})`).join(' ');
+      out.push(`\t\tside\n\t\t{\n\t\t\t"id" "${(lastSid=id++)}"\n\t\t\t"plane" "${p}"\n\t\t\t"material" "${q(sideMat(B,bi,ti))}"`);
+      const uv=texAxes(ti,M?rot(M,B.planes[s.plane]):B.planes[s.plane],org,M);out.push(`\t\t\t"uaxis" "${uv[0]}"\n\t\t\t"vaxis" "${uv[1]}"`);
+      out.push(`\t\t\t"rotation" "0"\n\t\t\t"lightmapscale" "${ti?ti.lm:16}"\n\t\t\t"smoothing_groups" "0"`);
+      if(recSides&&!M&&!org){const pn=B.planes[s.plane];let nx=0,ny=0,nz=0;for(let k=0;k<poly.length;k++){const a=poly[k],b=poly[(k+1)%poly.length];nx+=(a[1]-b[1])*(a[2]+b[2]);ny+=(a[2]-b[2])*(a[0]+b[0]);nz+=(a[0]-b[0])*(a[1]+b[1])}
+        sideRecs.push({id:lastSid,poly,n:pn,sg:(nx*pn[0]+ny*pn[1]+nz*pn[2])>=0?1:-1})}
+      const dI=-1;
+      if(dI>=0){
+        const di=B.dispinfo[dI],n=(1<<di.power)+1,pl=B.planes[s.plane];
+        const V=(r,c)=>B.dverts[di.vs+r*n+c]||[0,0,0,0,0];
+        const line=(r,fn)=>Array.from({length:n},(_,c)=>fn(V(r,c))).join(' ');
+        stats.disps++;
+        out.push(`\t\t\tdispinfo\n\t\t\t{\n\t\t\t\t"power" "${di.power}"\n\t\t\t\t"startposition" "[${di.start.map(f).join(' ')}]"\n\t\t\t\t"flags" "0"\n\t\t\t\t"elevation" "0"\n\t\t\t\t"subdiv" "0"`);
+        rows('normals',n,r=>line(r,v=>`${f(v[0])} ${f(v[1])} ${f(v[2])}`));
+        rows('distances',n,r=>line(r,v=>f(v[3])));
+        rows('offsets',n,r=>line(r,()=>'0 0 0'));
+        rows('offset_normals',n,r=>line(r,()=>`${f(pl[0])} ${f(pl[1])} ${f(pl[2])}`));
+        rows('alphas',n,r=>line(r,v=>f(v[4])));
+        rows('triangle_tags',n-1,()=>Array((n-1)*2).fill(9).join(' '));
+        out.push(`\t\t\t\tallowed_verts\n\t\t\t\t{\n\t\t\t\t\t"10" "${Array(10).fill(-1).join(' ')}"\n\t\t\t\t}\n\t\t\t}`);
+      }
+      out.push('\t\t}');
+    }
+    out.push('\t\teditor\n\t\t{\n\t\t\t"color" "0 180 0"\n\t\t\t"visgroupshown" "1"\n\t\t\t"visgroupautoshown" "1"\n\t\t}\n\t}');
+  };
+
+  // displacement: solid строится из грани (как в BSPSrc): верх = грань, низ = грань - normal*1, 4 боковых стороны
+  const dispSolid=di=>{
+    if(!di.pts||di.pts.length!==4)return;
+    const n=(1<<di.power)+1,V=(r,c)=>B.dverts[di.vs+r*n+c]||[0,0,0,0,0],line=(r,fn)=>Array.from({length:n},(_,c)=>fn(V(r,c))).join(' ');
+    const pts=di.pts,fn=di.fn,ti=B.texinfo[di.ti],bt=pts.map(v=>[v[0]-fn[0],v[1]-fn[1],v[2]-fn[2]]);
+    const P=a=>a.map(v=>`(${f8x(v[0])} ${f8x(v[1])} ${f8x(v[2])})`).join(' ');
+    const cr=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+    const nrm=pl=>{const c=cr([pl[0][0]-pl[1][0],pl[0][1]-pl[1][1],pl[0][2]-pl[1][2]],[pl[2][0]-pl[1][0],pl[2][1]-pl[1][1],pl[2][2]-pl[1][2]]),l=Math.hypot(...c)||1;return c.map(x=>x/l)};
+    const top=texAxes(ti,fn);
+    const neg=t=>{const m=t.match(/\[(\S+) (\S+) (\S+) (\S+)\] (\S+)/);return `[${f(-m[1])} ${f(-m[2])} ${f(-m[3])} ${f(-m[4])}] ${m[5]}`};
+    const sd=[{pl:[pts[0],pts[1],pts[2]],uv:top,disp:true},{pl:[bt[0],bt[2],bt[1]],uv:[neg(top[0]),top[1]]}];
+    for(let i=0;i<4;i++){const pl=[pts[i],bt[i],pts[(i+1)%4]];sd.push({pl,uv:texAxes(null,nrm(pl))})}
+    stats.brushes++;stats.disps++;stats.sides+=6;
+    out.push(`\tsolid\n\t{\n\t\t"id" "${id++}"`);
+    for(const x of sd){
+      out.push(`\t\tside\n\t\t{\n\t\t\t"id" "${(lastSid=id++)}"\n\t\t\t"plane" "${P(x.pl)}"\n\t\t\t"material" "${q(ti?ti.mat:'tools/toolsnodraw')}"`);
+      out.push(`\t\t\t"uaxis" "${x.uv[0]}"\n\t\t\t"vaxis" "${x.uv[1]}"\n\t\t\t"rotation" "0"\n\t\t\t"lightmapscale" "${ti?ti.lm:16}"\n\t\t\t"smoothing_groups" "0"`);
+      if(x.disp){
+        dispSideId.set(di.face,lastSid);
+        out.push(`\t\t\tdispinfo\n\t\t\t{\n\t\t\t\t"power" "${di.power}"\n\t\t\t\t"startposition" "[${di.start.map(f).join(' ')}]"\n\t\t\t\t"flags" "0"\n\t\t\t\t"elevation" "0"\n\t\t\t\t"subdiv" "0"`);
+        rows('normals',n,r=>line(r,v=>`${f(v[0])} ${f(v[1])} ${f(v[2])}`));
+        rows('distances',n,r=>line(r,v=>f(v[3])));
+        rows('offsets',n,r=>line(r,()=>'0 0 0'));
+        rows('offset_normals',n,r=>line(r,()=>`${f(fn[0])} ${f(fn[1])} ${f(fn[2])}`));
+        rows('alphas',n,r=>line(r,v=>f(v[4])));
+        rows('triangle_tags',n-1,()=>Array((n-1)*2).fill(9).join(' '));
+        out.push(`\t\t\t\tallowed_verts\n\t\t\t\t{\n\t\t\t\t\t"10" "${Array(10).fill(-1).join(' ')}"\n\t\t\t\t}\n\t\t\t}`);
+      }
+      out.push('\t\t}');
+    }
+    out.push('\t\teditor\n\t\t{\n\t\t\t"color" "0 180 0"\n\t\t\t"visgroupshown" "1"\n\t\t\t"visgroupautoshown" "1"\n\t\t}\n\t}');
+  };
+  const ents=B.ents,world=ents[0]||[];
+  out.push(`world\n{\n\t"id" "${id++}"\n\t"mapversion" "1"\n\t"classname" "worldspawn"`);
+  for(const [k,v] of world)if(!['classname','mapversion','id','model'].includes(k.toLowerCase()))out.push(`\t"${q(k)}" "${q(v)}"`);
+  const isDetail=bi=>{const c=B.brushes[bi].contents;return !!(c&0x8000000)&&!(c&0x30000)};
+  const wb0=modelBrushes(B,0),isLad=bi=>{const c=B.brushes[bi].contents;return !!(c&0x20000000)&&!(c&1)};
+  const wb=wb0.filter(bi=>!isLad(bi)),ladB=wb0.filter(isLad);
+  recSides=true;
+  const asEnt=$('oDetail').checked;
+  wb.filter(bi=>!(asEnt&&isDetail(bi))).forEach(b=>solid(b));
+  if(useDisp)B.dispinfo.forEach(dispSolid);
+  out.push('}');
+  if(asEnt)for(const bi of wb.filter(isDetail)){
+    out.push(`entity\n{\n\t"id" "${id++}"\n\t"classname" "func_detail"`);solid(bi);out.push('}');
+  }
+  recSides=false;
+  for(const bi of ladB){out.push(`entity\n{\n\t"id" "${id++}"\n\t"classname" "func_ladder"`);solid(bi);out.push('}')}
+  log(`Мир: ${stats.brushes} brush-ей, ${stats.disps} displacement`+(ladB.length?`, func_ladder: ${ladB.length}`:''));
+
+  const apB=B.brushes.map((b,i)=>i).filter(i=>B.brushes[i].contents&0x8000);
+  const apK=[...new Set(B.aps.filter(k=>k>0))].sort((a,b)=>a-b),apMap=new Map();
+  if(apK.length&&apK.length===apB.length){apK.forEach((k,i)=>apMap.set(k,apB[i]));apNote='сопоставлено по порядку: '+apK.length}
+  else if(apK.length)apNote='не сопоставлено (порталов '+apK.length+', brush-ей '+apB.length+')';
+  else apNote='нет';
+  if(apNote!=='нет')log('Areaportal: '+apNote);
+  if(useEnt){
+    for(let e=1;e<ents.length;e++){
+      const en=ents[e],mdl=en.find(x=>x[0]==='model'),bm=mdl&&/^\*(\d+)$/.exec(mdl[1]);
+      if(bm&&!useBE)continue;
+      const mi=bm?+bm[1]:-1;
+      stats.ents++;
+      out.push(`entity\n{\n\t"id" "${id++}"`);
+      const conns=[];
+      for(const [k,v] of en){
+        if(k==='id'||k==='portalnumber'||(bm&&(k==='model'||k==='angles')))continue;
+        if(/^on[A-Z]/.test(k)&&/[,\x1b]/.test(v)){conns.push([k,v.replace(/\x1b/g,',')]);continue}
+        out.push(`\t"${q(k)}" "${en.find(x=>x[0]==='classname')?.[1]==='lua_run' && k.toLowerCase()==='code' ? qLua(v) : q(v)}"`);
+      }
+      if(conns.length){out.push('\tconnections\n\t{');conns.forEach(([k,v])=>out.push(`\t\t"${q(k)}" "${q(v)}"`));out.push('\t}')}
+      if(bm&&B.models[mi]!==undefined){stats.brushEnts++;(()=>{const ok=en.find(x=>x[0]==='origin'),org=ok?ok[1].split(/\s+/).map(Number):null,an=en.find(x=>x[0]==='angles'),ang=an?an[1].trim().split(/\s+/).map(Number):null,M=ang&&ang.some(x=>x)?rotMat(ang):null;modelBrushes(B,mi).forEach(b=>solid(b,org,M))})()}
+      else if(en.some(x=>x[0]==='portalnumber')){const pn=en.find(x=>x[0]==='portalnumber'),ib=pn&&apMap.get(+pn[1]);if(ib!==undefined){stats.brushEnts++;solid(ib)}}
+      out.push('\teditor\n\t{\n\t\t"color" "220 30 220"\n\t\t"visgroupshown" "1"\n\t\t"visgroupautoshown" "1"\n\t}\n}');
+    }
+  }
+  if(useEnt){
+    const loMap=new Map();
+    for(const pr of B.props){
+      let lo='';
+      if((pr.flags&2)&&pr.lo){const k=pr.lo.map(Math.round).join(',');let nm=loMap.get(k);
+        if(!nm){nm='lightorg_'+(loMap.size+1);loMap.set(k,nm);
+          out.push(`entity\n{\n\t"id" "${id++}"\n\t"classname" "info_lighting"\n\t"origin" "${pr.lo.map(f).join(' ')}"\n\t"targetname" "${nm}"\n}`)}
+        lo=`\n\t"lightingorigin" "${nm}"`}
+      out.push(`entity\n{\n\t"id" "${id++}"\n\t"classname" "prop_static"\n\t"origin" "${pr.origin.map(f).join(' ')}"\n\t"angles" "${pr.angles.map(f).join(' ')}"\n\t"skin" "${pr.skin}"\n\t"fademindist" "${f(pr.fmin)}"\n\t"fademaxdist" "${f(pr.fmax)}"\n\t"solid" "${pr.solid}"\n\t"model" "${q(pr.model)}"\n\t"screenspacefade" "${pr.flags&0x20?1:0}"\n\t"ignorenormals" "${pr.flags&8?1:0}"\n\t"disableselfshadowing" "${pr.flags&0x80?1:0}"\n\t"disablevertexlighting" "${pr.flags&0x40?1:0}"\n\t"disableshadows" "${pr.flags&0x10?1:0}"\n\t"fadescale" "${f(pr.fs)}"\n\t"maxdxlevel" "${pr.mxx}"\n\t"mindxlevel" "${pr.mnx}"${lo}\n}`);
+    }
+    for(const c of B.cubes)out.push(`entity\n{\n\t"id" "${id++}"\n\t"classname" "env_cubemap"\n\t"origin" "${c[0]} ${c[1]} ${c[2]}"\n\t"cubemapsize" "${c[3]}"\n}`);
+    let ovOk=0;
+    for(const ov of B.overlays){
+      const ids=new Set();
+      ov.faces.forEach(fi=>{
+        const fd=B.faceInfo(fi);if(!fd)return;
+        if(fd.disp>=0){const sid=dispSideId.get(fi);if(sid)ids.add(sid);return}
+        let best=0,bd=1e9;
+        for(const r of sideRecs){
+          const n=r.n;if(Math.abs(n[0]*fd.n[0]+n[1]*fd.n[1]+n[2]*fd.n[2])<0.9||n[0]*ov.nrm[0]+n[1]*ov.nrm[1]+n[2]*ov.nrm[2]<0.5)continue;   // ориентацию берём из BasisNormal оверлея
+          const dd=Math.abs(n[0]*fd.c[0]+n[1]*fd.c[1]+n[2]*fd.c[2]-n[3]);if(dd>1.5||dd>=bd)continue;
+          let ok=true;
+          for(let k=0;k<r.poly.length&&ok;k++){
+            const a=r.poly[k],b=r.poly[(k+1)%r.poly.length],e=[b[0]-a[0],b[1]-a[1],b[2]-a[2]],w=[fd.c[0]-a[0],fd.c[1]-a[1],fd.c[2]-a[2]],el=Math.hypot(...e)||1;
+            const cx=[e[1]*w[2]-e[2]*w[1],e[2]*w[0]-e[0]*w[2],e[0]*w[1]-e[1]*w[0]];
+            if((cx[0]*n[0]+cx[1]*n[1]+cx[2]*n[2])*r.sg/el<-1)ok=false;
+          }
+          if(ok){best=r.id;bd=dd}
+        }
+        if(best)ids.add(best);
+      });
+      if(!ids.size)continue;
+      const N=ov.nrm,U=ov.bu,V=[N[1]*U[2]-N[2]*U[1],N[2]*U[0]-N[0]*U[2],N[0]*U[1]-N[1]*U[0]],ti=B.texinfo[ov.ti],o=ov.org.map(f).join(' ');
+      out.push(`entity\n{\n\t"id" "${id++}"\n\t"classname" "info_overlay"\n\t"material" "${q(ti?ti.mat:'')}"\n\t"StartU" "${f(ov.u[0])}"\n\t"EndU" "${f(ov.u[1])}"\n\t"StartV" "${f(ov.v[0])}"\n\t"EndV" "${f(ov.v[1])}"\n\t"BasisOrigin" "${o}"\n\t"BasisU" "${U.map(f).join(' ')}"\n\t"BasisV" "${V.map(f).join(' ')}"\n\t"BasisNormal" "${N.map(f).join(' ')}"\n\t"origin" "${o}"\n\t"fademindist" "-1"\n\t"fademaxdist" "0"\n\t"uv0" "${ov.uv[0].map(f).join(' ')} 0"\n\t"uv1" "${ov.uv[1].map(f).join(' ')} 0"\n\t"uv2" "${ov.uv[2].map(f).join(' ')} 0"\n\t"uv3" "${ov.uv[3].map(f).join(' ')} 0"\n\t"RenderOrder" "${ov.order}"\n\t"sides" "${[...ids].join(' ')}"\n}`);
+      ovOk++;
+    }
+    log(`info_overlay: ${ovOk} из ${B.overlays.length}, info_lighting: ${loMap.size}`);
+    log(`static props: ${B.props.length}, env_cubemap: ${B.cubes.length}`+(B.propNote?' ('+B.propNote+')':''));
+  }
+  out.push('cameras\n{\n\t"activecamera" "-1"\n}\ncordons\n{\n\t"active" "0"\n}');
+  return {vmf:out.join('\n'),stats};
+}
+</script>
+
+<script>
+// Embedded in Source Asset Viewer: receive the selected UI language from the parent.
+(function(){
+  const langs=['ru','en','uk','de','fr','es','it','pt','pl','tr','zh','ja','ko'];
+  function setLang(lang){ if(!langs.includes(lang)) lang='en'; document.documentElement.dataset.hostLang=lang; }
+  window.addEventListener('message',async function(e){
+    const d=e.data||{};
+    if(d.type==='sav-language'){ setLang(d.lang); return; }
+    if(d.type!=='sav-convert-bsp'||!d.buffer) return;
+    try {
+      bspBuf=d.buffer; bspName=String(d.name||'map').replace(/\.bsp$/i,'');
+      logEl.textContent=''; log('Конвертация BSP для просмотрщика…');
+      const id=new DataView(bspBuf).getInt32(0,true);
+      if(id!==0x50534256) throw new Error('Для прямого просмотра пока поддерживается Source BSP (VBSP), не GoldSrc.');
+      const files=await runSource();
+      files.unshift({name:bspName+'.bsp',data:new Uint8Array(bspBuf)});
+      parent.postMessage({type:'sav-bsp-converted',requestId:d.requestId,name:bspName,files:files.map(x=>({name:x.name,data:x.data}))}, '*');
+      log('Готово. Карта и извлечённые ресурсы переданы в просмотрщик.');
+    } catch(err) {
+      parent.postMessage({type:'sav-bsp-error',requestId:d.requestId,error:String(err&&err.message||err)}, '*');
+      log('Ошибка: '+(err&&err.message||err),1);
+    }
+  });
+  try { parent.postMessage({type:'sav-converter-ready'}, '*'); } catch(_){}
+})();
+</script>
+</body>
+</html>
